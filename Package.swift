@@ -83,6 +83,17 @@ let package = Package(
                 .define("_GNU_SOURCE"),
                 .define("_POSIX_C_SOURCE", to: "200112L"),
                 .define("_DARWIN_C_SOURCE"),
+                // Windows: prevent <windows.h> from pulling in legacy
+                // <winsock.h> (which conflicts with <winsock2.h> included
+                // later by ssl/internal.h, causing redefinition of
+                // fd_set/sockaddr/WSAData/etc.). LEAN_AND_MEAN excludes
+                // winsock.h; we then include winsock2.h explicitly.
+                .define("WIN32_LEAN_AND_MEAN", .when(platforms: [.windows])),
+                .define("_WIN32_WINNT", to: "0x0A00", .when(platforms: [.windows])),
+                // Suppress Win SDK macro defs of `min`/`max` so
+                // `std::numeric_limits<...>::max()` parses correctly in
+                // C++ TUs that transitively include <windows.h>.
+                .define("NOMINMAX", .when(platforms: [.windows])),
             ]
         ),
         .target(
@@ -91,7 +102,8 @@ let package = Package(
                 "CNIOBoringSSL"
             ],
             cSettings: [
-                .define("_GNU_SOURCE")
+                .define("_GNU_SOURCE"),
+                .define("WIN32_LEAN_AND_MEAN", .when(platforms: [.windows])),
             ]
         ),
         .target(
