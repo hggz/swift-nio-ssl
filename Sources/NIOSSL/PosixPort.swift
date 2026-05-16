@@ -30,6 +30,74 @@ import Musl
 import Glibc
 #elseif canImport(Android)
 import Android
+#elseif canImport(WinSDK)
+import WinSDK
+// `WinSDK` re-exports the Universal CRT (ucrt) so `fopen`, `fclose`, `FILE`,
+// `EINTR`, `EFAULT`, `EBADF`, and `strerror` are all available. Symbol shape differs
+// from POSIX in five ways that this file papers over for Windows:
+//   1. `stat` (function + struct) is named `_stat64` on Windows MSVC. We typealias it.
+//   2. `lstat` doesn't exist on Windows. We alias it to `_stat64` so the caller's
+//      symlink check correctly returns false on regular files. Real reparse-point
+//      handling would require `GetFileAttributesExW`, but the only caller of
+//      `Posix.lstat` in NIOSSL is OpenSSL-style CA bundle rehash detection, which
+//      we gate out entirely on Windows below (no `/etc/ssl/certs`-style directories
+//      exist on Windows; users go through certificate stores instead).
+//   3. `mlock`/`munlock` are unimplemented; we map them to `VirtualLock`/`VirtualUnlock`,
+//      which are the closest Win32 equivalent (page-granularity working-set locking).
+//   4. `readlink` is referenced by `sysReadlink` but never actually called from NIOSSL
+//      Swift code. We provide a stub that fails with ENOSYS so the linker is happy and
+//      any future caller sees a clear error.
+//   5. `errno` is a macro in Windows MSVC, expanding to `*_errno()`. Swift's `WinSDK`
+//      overlay doesn't expose it as a global; we route through `_errno().pointee`.
+//   6. `S_IFLNK` macro doesn't exist on Windows; we provide the POSIX value (0xA000)
+//      as a Swift constant in the same module. Since `_stat64`'s st_mode never sets
+//      this bit on Windows, the symlink check correctly returns false.
+internal typealias stat = _stat64
+internal let S_IFLNK: UInt16 = 0xA000
+
+// Bridge for Swift code that wants to read/write the Windows CRT errno. Routes
+// through `_errno()` which the CRT macro expands to.
+@inline(__always)
+internal var errno: CInt {
+    get { _errno().pointee }
+    set { _errno().pointee = newValue }
+}
+
+@inline(__always)
+private func _winReadlink(
+    _ path: UnsafePointer<CChar>,
+    _ buf: UnsafeMutablePointer<CChar>,
+    _ bufSize: Int
+) -> Int {
+    // No POSIX-style readlink on Windows; this stub returns -1 with errno=ENOSYS so
+    // wrapSyscall throws an IOError. No code path in NIOSSL Swift actually invokes
+    // Posix.readlink, so this is purely defensive.
+    errno = ENOSYS
+    return -1
+}
+
+@inline(__always)
+private func _winMlock(_ addr: UnsafeRawPointer, _ len: size_t) -> CInt {
+    // Page-granularity working-set lock via VirtualLock. Returns 0 on success, -1
+    // with errno on failure (matching the POSIX contract that wrapSyscall expects).
+    // Windows VirtualLock returns `Bool` (Swift overlay) where `true` == success.
+    let ok = VirtualLock(UnsafeMutableRawPointer(mutating: addr), SIZE_T(len))
+    if !ok {
+        errno = EACCES
+        return -1
+    }
+    return 0
+}
+
+@inline(__always)
+private func _winMunlock(_ addr: UnsafeRawPointer, _ len: size_t) -> CInt {
+    let ok = VirtualUnlock(UnsafeMutableRawPointer(mutating: addr), SIZE_T(len))
+    if !ok {
+        errno = EACCES
+        return -1
+    }
+    return 0
+}
 #else
 #error("unsupported os")
 #endif
@@ -40,6 +108,17 @@ internal typealias FILEPointer = OpaquePointer
 internal typealias FILEPointer = UnsafeMutablePointer<FILE>
 #endif
 
+#if canImport(WinSDK)
+// Windows MSVC: ucrt provides `fopen`/`fclose` directly. `stat()` is `_stat64()`.
+// `lstat`/`readlink`/`mlock`/`munlock` are stubbed/remapped above.
+private let sysFopen = fopen
+private let sysMlock = _winMlock
+private let sysMunlock = _winMunlock
+private let sysFclose = fclose
+private let sysStat = { @Sendable in _stat64($0, $1) }
+private let sysLstat = { @Sendable in _stat64($0, $1) }
+private let sysReadlink = _winReadlink
+#else
 private let sysFopen = fopen
 private let sysMlock = mlock
 private let sysMunlock = munlock
@@ -47,6 +126,7 @@ private let sysFclose = fclose
 private let sysStat = { @Sendable in stat($0, $1) }
 private let sysLstat = lstat
 private let sysReadlink = readlink
+#endif
 
 // MARK:- Copied code from SwiftNIO
 private func isUnacceptableErrno(_ code: CInt) -> Bool {

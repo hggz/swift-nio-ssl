@@ -24,6 +24,8 @@ import Musl
 import Glibc
 #elseif canImport(Bionic)
 import Bionic
+#elseif canImport(WinSDK)
+import WinSDK
 #else
 #error("unsupported os")
 #endif
@@ -33,6 +35,8 @@ import struct Darwin.time_t
 #elseif canImport(Glibc)
 import struct Glibc.time_t
 #endif
+// On Musl / Bionic / WinSDK, `time_t` is exposed by the corresponding umbrella module's
+// top-level import above; no separate struct re-import is needed.
 
 /// A reference to a BoringSSL Certificate object (`X509 *`).
 ///
@@ -427,7 +431,7 @@ extension NIOSSLCertificate {
         var dataPtr: UnsafeMutablePointer<CChar>? = nil
         let length = CNIOBoringSSL_BIO_get_mem_data(bio, &dataPtr)
 
-        guard let bytes = dataPtr.map({ UnsafeRawBufferPointer(start: $0, count: length) }) else {
+        guard let bytes = dataPtr.map({ UnsafeRawBufferPointer(start: $0, count: Int(length)) }) else {
             fatalError("Failed to map bytes from a certificate")
         }
 

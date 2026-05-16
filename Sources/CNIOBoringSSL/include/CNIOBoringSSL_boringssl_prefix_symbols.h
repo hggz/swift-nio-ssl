@@ -17,6 +17,13 @@
 #define BORINGSSL_ADD_PREFIX(a, b) BORINGSSL_ADD_PREFIX_INNER(a, b)
 #define BORINGSSL_ADD_PREFIX_INNER(a, b) a ## _ ## b
 
+// Windows-only: prefix the TLS thread-exit callback pointer so it doesn't
+// collide with the same symbol from swift-crypto's CCryptoBoringSSL when both
+// libraries are linked into the same binary. Upstream BoringSSL's
+// `crypto/thread_win.cc` defines this as a raw symbol and only honours
+// renaming via BORINGSSL_PREFIX macro substitution at the call site.
+#define p_thread_callback_boringssl BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, p_thread_callback_boringssl)
+
 #define ACCESS_DESCRIPTION_free BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, ACCESS_DESCRIPTION_free)
 #define ACCESS_DESCRIPTION_new BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, ACCESS_DESCRIPTION_new)
 #define AES_CMAC BORINGSSL_ADD_PREFIX(BORINGSSL_PREFIX, AES_CMAC)

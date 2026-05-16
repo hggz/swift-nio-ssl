@@ -24,6 +24,8 @@ import Musl
 import Glibc
 #elseif canImport(Android)
 import Android
+#elseif canImport(WinSDK)
+import WinSDK
 #else
 #error("unsupported os")
 #endif
@@ -47,6 +49,9 @@ internal enum FileSystemObject {
 
         #if os(Android) && arch(arm)
         return (statObj.st_mode & UInt32(S_IFDIR)) != 0 ? .directory : .file
+        #elseif canImport(WinSDK)
+        // Windows MSVC: _stat64.st_mode is UInt16; S_IFDIR is Int32. Cast to match.
+        return (statObj.st_mode & UInt16(S_IFDIR)) != 0 ? .directory : .file
         #else
         return (statObj.st_mode & S_IFDIR) != 0 ? .directory : .file
         #endif
@@ -697,7 +702,10 @@ extension NIOSSLContext {
             // This could be from a location like /etc/ssl/cert.pem as an example.
             CNIOBoringSSL_SSL_CTX_set_client_CA_list(context, CNIOBoringSSL_SSL_load_client_CA_file(path))
         } else if sendCANames, isDirectory {
+            #if !os(Windows)
             // Match the c_rehash directory format and load the certificate based on this criteria.
+            // This is a Linux/macOS convention (8-hex-digit symlinks in /etc/ssl/certs); it
+            // doesn't apply on Windows where CA trust comes from the certificate store.
             let certificateFilePaths = try DirectoryContents(path: path).filter {
                 try self._isRehashFormat(path: $0)
             }
@@ -707,6 +715,7 @@ extension NIOSSLContext {
                 let cert = try NIOSSLCertificate(_file: symPath, format: .pem)
                 try addCACertificateNameToList(context: context, certificate: cert)
             }
+            #endif
         }
     }
 
@@ -792,6 +801,12 @@ extension NIOSSLContext {
         // Check the mode to make sure this is a symlink
         #if os(Android) && arch(arm)
         if (buffer.st_mode & UInt32(S_IFMT)) != UInt32(S_IFLNK) { return false }
+        #elseif canImport(WinSDK)
+        // Windows: st_mode is UInt16, S_IFMT is Int32 from ucrt. Width-cast then compare
+        // with our UInt16-constant S_IFLNK. Note: _stat64 never sets the S_IFLNK bit
+        // on Windows, so this always returns false on Windows (the entire `_isFileRehashed`
+        // code path is for OpenSSL-style CA-bundle directories that don't exist on Windows).
+        if (buffer.st_mode & UInt16(S_IFMT)) != S_IFLNK { return false }
         #else
         if (buffer.st_mode & S_IFMT) != S_IFLNK { return false }
         #endif
@@ -919,16 +934,29 @@ internal class DirectoryContents: Sequence, IteratorProtocol {
     // Otherwise an OpaquePointer needs to be used to account for the non-defined type in glibc.
     #if canImport(Darwin)
     let dir: UnsafeMutablePointer<DIR>
+    #elseif canImport(WinSDK)
+    // Windows has no POSIX opendir/readdir/closedir. This entire DirectoryContents
+    // type is only used by `loadVerifyLocations`'s c_rehash directory-loading branch,
+    // which is gated out on Windows above. Define a placeholder so the type compiles.
+    let dir: OpaquePointer
     #else
     let dir: OpaquePointer
     #endif
 
     init(path: String) {
         self.path = path
+        #if canImport(WinSDK)
+        // Should never be called on Windows because the only call site is gated out.
+        fatalError("DirectoryContents is not implemented on Windows; the c_rehash CA bundle code path is gated out in loadVerifyLocations.")
+        #else
         self.dir = opendir(path)!
+        #endif
     }
 
     func next() -> String? {
+        #if canImport(WinSDK)
+        return nil
+        #else
         if let dirent: UnsafeMutablePointer<dirent> = readdir(self.dir) {
             let name = withUnsafePointer(to: &dirent.pointee.d_name) { (ptr) -> String in
                 // Pointers to homogeneous tuples in Swift are always bound to both the tuple type and the element type,
@@ -939,10 +967,13 @@ internal class DirectoryContents: Sequence, IteratorProtocol {
             return self.path + name
         }
         return nil
+        #endif
     }
 
     deinit {
+        #if !canImport(WinSDK)
         closedir(dir)
+        #endif
     }
 }
 

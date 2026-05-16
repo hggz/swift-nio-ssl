@@ -94,6 +94,18 @@ let package = Package(
                 // `std::numeric_limits<...>::max()` parses correctly in
                 // C++ TUs that transitively include <windows.h>.
                 .define("NOMINMAX", .when(platforms: [.windows])),
+                // Windows x86_64: BoringSSL ships `.S` assembly files for
+                // x86_64-{linux,apple} and armv8-win, but none for
+                // x86_64-win. SwiftPM compiles the `.S` files anyway, but
+                // their ELF-style symbol decorations don't satisfy
+                // lld-link's COFF resolver, producing undefined references
+                // to ChaCha20_ctr32_avx2 / aes_hw_* / etc. Defining
+                // OPENSSL_NO_ASM forces BoringSSL's portable C
+                // implementations everywhere on Windows. Performance is
+                // lower than asm-backed crypto but functionality is
+                // identical. ARM64 Windows users get their proper asm
+                // via `*armv8-win.S` files which DO produce COFF symbols.
+                .define("OPENSSL_NO_ASM", .when(platforms: [.windows])),
             ]
         ),
         .target(
